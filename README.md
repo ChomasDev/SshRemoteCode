@@ -96,6 +96,7 @@ const vps = new SshRemoteCode({
   sandboxPath: '/home/villafavero/testcode/dist',
   preBuildCommand: true,
   preBuildCustomCommand: 'npm install && npm run build',
+  streamRemoteLogs: true, // Stream remote console.log to local console
 });
 
 await vps.connect();
@@ -158,7 +159,39 @@ if (artifact.code === 0) {
 }
 ```
 
-### “The AI doesn’t know it’s calling other machines”
+### Remote Console Logging
+
+When developing or debugging remote functions, you can stream console output from the remote machine to your local console:
+
+```ts
+const vps = new SshRemoteCode({
+  host: '192.168.1.65',
+  username: 'villafavero',
+  privateKey: 'C:\\Users\\faver\\.ssh\\id_ed25519',
+  sandboxPath: '/home/villafavero/testcode/dist',
+  streamRemoteLogs: true, // Enable log streaming
+});
+
+await vps.connect();
+
+// Remote function with console.log statements
+const mod = await vps.import<{ processData: (data: any) => Promise<void> }>('./dataProcessor');
+await mod.processData({ id: 123 });
+
+// Console output from remote machine will appear locally prefixed with [Remote]:
+// [Remote] Processing data: { id: 123 }
+// [Remote] Step 1 complete
+// [Remote] Step 2 complete
+```
+
+**Features:**
+- Captures `console.log`, `console.error`, `console.warn`, and `console.info` from remote code
+- Streams output in real-time (not buffered until completion)
+- Prefixes all remote logs with `[Remote]` to distinguish them from local logs
+- Works for both `import()` module calls and `execute()` arbitrary code
+- Zero performance impact when disabled (default: `false`)
+
+### "The AI doesn't know it's calling other machines"
 
 Once you expose everything as TypeScript interfaces, orchestration becomes regular code. The model writes code like:
 

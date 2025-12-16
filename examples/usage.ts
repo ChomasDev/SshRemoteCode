@@ -7,6 +7,7 @@ const homeassConf: SshRemoteCodeConfig = {
   privateKey: '/path/to/ssh/key', // or provide key content directly
   sandboxPath: '/home/user/sandbox',
   port: 22, // optional, defaults to 22
+  streamRemoteLogs: true, // Stream remote console.log to local console
 };
 
 async function main() {

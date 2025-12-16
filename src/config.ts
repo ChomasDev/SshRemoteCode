@@ -26,6 +26,8 @@ export interface SshRemoteCodeConfig {
   preBuildCommand?: boolean;
   /** Pre build custom command to run before building the sandbox */
   preBuildCustomCommand?: string;
+  /** Stream remote console.log output to local console (default: false) */
+  streamRemoteLogs?: boolean;
 }
 
 /**

@@ -31,7 +31,11 @@ export class SshRemoteCode {
     constructor(config: SshRemoteCodeConfig) {
         this.connection = new SshConnection(config);
         this.sandboxPath = config.sandboxPath;
-        this.executor = new RemoteExecutor(this.connection, this.sandboxPath);
+        this.executor = new RemoteExecutor(
+            this.connection, 
+            this.sandboxPath, 
+            config.streamRemoteLogs || false
+        );
 
         this.buildCommand = config.preBuildCustomCommand ?? 'npm run build';
         this.preBuildCommand = config.preBuildCommand || false;

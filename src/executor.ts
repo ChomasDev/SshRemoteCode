@@ -4,223 +4,68 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 
 /**
- * Handles remote code execution in the sandbox
+ * Static runner script for safe function execution.
+ * This script reads parameters from stdin as JSON, avoiding any code generation.
  */
-export class RemoteExecutor {
-  constructor(private connection: SshConnection, private sandboxPath: string) {}
+const FUNCTION_RUNNER_SCRIPT = `
+const path = require('path');
 
-  /**
-   * Execute arbitrary code in the remote sandbox
-   */
-  async execute<T = any>(code: string): Promise<T> {
-    // Create a wrapper script that executes the code in the sandbox
-    const wrappedCode = this.wrapCode(code, this.sandboxPath);
+async function main() {
+  // Read JSON params from stdin
+  const input = await new Promise((resolve) => {
+    let data = '';
+    process.stdin.setEncoding('utf8');
+    process.stdin.on('data', chunk => data += chunk);
+    process.stdin.on('end', () => resolve(data));
+  });
 
-    // Create a temporary script file on the remote machine
-    const tempScriptPath = `/tmp/ssh-remote-code-${crypto.randomBytes(8).toString('hex')}.js`;
-
-    try {
-      // Upload the script to the remote machine
-      const sftp = await this.connection.getSftp();
-      await new Promise<void>((resolve, reject) => {
-        const writeStream = sftp.createWriteStream(tempScriptPath);
-        writeStream.on('close', () => {
-          resolve();
-        });
-        writeStream.on('error', (err: Error) => {
-          reject(err);
-        });
-        writeStream.end(wrappedCode, 'utf8');
-      });
-
-      // Execute the script
-      const client = this.connection.getClient();
-      return new Promise((resolve, reject) => {
-        client.exec(`node ${tempScriptPath}`, (err, stream) => {
-          if (err) {
-            this.cleanupTempFile(tempScriptPath).catch(() => {});
-            reject(err);
-            return;
-          }
-
-          let stdout = '';
-          let stderr = '';
-
-          stream.on('data', (data: Buffer) => {
-            stdout += data.toString();
-          });
-
-          stream.stderr.on('data', (data: Buffer) => {
-            stderr += data.toString();
-          });
-
-          stream.on('close', async (code: string) => {
-            // Clean up the temporary file
-            await this.cleanupTempFile(tempScriptPath).catch(() => {});
-
-            try {
-              // Try to parse the result from stdout
-              const result = this.parseResult(stdout, stderr);
-              if (result.success) {
-                resolve(result.result as T);
-              } else {
-                const error = new Error(result.error?.message || 'Execution failed');
-                if (result.error?.stack) {
-                  (error as any).stack = result.error.stack;
-                }
-                reject(error);
-              }
-            } catch (parseError) {
-              reject(
-                new Error(
-                  `Failed to parse execution result. stdout: ${stdout}, stderr: ${stderr}, parseError: ${parseError}`
-                )
-              );
-            }
-          });
-        });
-      });
-    } catch (error) {
-      await this.cleanupTempFile(tempScriptPath).catch(() => {});
-      throw error;
-    }
-  }
-
-  /**
-   * Execute a function call remotely
-   */
-  async executeFunction<T = any>(
-    modulePath: string,
-    functionName: string,
-    args: any[]
-  ): Promise<T> {
-    // Serialize arguments as JSON string
-    const serializedArgs = JSON.stringify(args);
-
-    // Create code to import module and call function
-    // Use JSON.stringify to safely embed strings
-    // This code is a complete block that returns a promise, so we don't need to wrap it in an assignment
-    const code = `(async () => {
-      const path = require('path');
-      const sandboxPath = ${JSON.stringify(this.sandboxPath)};
-      const modulePath = path.resolve(sandboxPath, ${JSON.stringify(modulePath)});
-      const module = require(modulePath);
-      const func = module[${JSON.stringify(functionName)}] || module.default?.[${JSON.stringify(functionName)}];
-      if (!func || typeof func !== 'function') {
-        throw new Error('Function ' + ${JSON.stringify(functionName)} + ' not found in module ' + modulePath);
-      }
-      const args = ${serializedArgs};
-      const result = func.apply(null, args);
-      return Promise.resolve(result).then(r => ({ success: true, result: r })).catch(e => ({
-        success: false,
-        error: {
-          message: e.message,
-          stack: e.stack,
-          name: e.name
-        }
-      }));
-    })()`;
-
-    const wrappedCode = this.wrapCode(code, this.sandboxPath);
-
-    // Create a temporary script file on the remote machine
-    const tempScriptPath = `/tmp/ssh-remote-code-${crypto.randomBytes(8).toString('hex')}.js`;
-
-    try {
-      // Upload the script to the remote machine
-      const sftp = await this.connection.getSftp();
-      await new Promise<void>((resolve, reject) => {
-        const writeStream = sftp.createWriteStream(tempScriptPath);
-        writeStream.on('close', () => {
-          resolve();
-        });
-        writeStream.on('error', (err: Error) => {
-          reject(err);
-        });
-        writeStream.end(wrappedCode, 'utf8');
-      });
-
-      // Execute the script
-      const client = this.connection.getClient();
-      return new Promise((resolve, reject) => {
-        client.exec(`node ${tempScriptPath}`, (err, stream) => {
-          if (err) {
-            this.cleanupTempFile(tempScriptPath).catch(() => {});
-            reject(err);
-            return;
-          }
-
-          let stdout = '';
-          let stderr = '';
-
-          stream.on('data', (data: Buffer) => {
-            stdout += data.toString();
-          });
-
-          stream.stderr.on('data', (data: Buffer) => {
-            stderr += data.toString();
-          });
-
-          stream.on('close', async (code: number | null) => {
-            // Clean up the temporary file
-            await this.cleanupTempFile(tempScriptPath).catch(() => {});
-
-            try {
-              const result = this.parseResult(stdout, stderr);
-              if (result.success) {
-                resolve(result.result as T);
-              } else {
-                const error = new Error(result.error?.message || 'Function execution failed');
-                if (result.error?.stack) {
-                  (error as any).stack = result.error.stack;
-                }
-                reject(error);
-              }
-            } catch (parseError) {
-              reject(
-                new Error(
-                  `Failed to parse function result. stdout: ${stdout}, stderr: ${stderr}, parseError: ${parseError}`
-                )
-              );
-            }
-          });
-        });
-      });
-    } catch (error) {
-      await this.cleanupTempFile(tempScriptPath).catch(() => {});
-      throw error;
-    }
-  }
-
-  /**
-   * Wrap code to execute in sandbox directory
-   * @param code - Code to wrap. If it's an expression (starts with '('), it will be assigned to result.
-   *                If it's a statement block, it will be executed directly and should handle its own output.
-   */
-  private wrapCode(code: string, sandboxPath: string): string {
-    // Use JSON.stringify to safely embed the sandbox path
-    const safeSandboxPath = JSON.stringify(sandboxPath);
-    // Remove leading/trailing whitespace from code to avoid issues
-    const trimmedCode = code.trim();
-    
-    // Check if code is an expression (starts with '(' for IIFE, or is a simple value/function call)
-    // If it starts with '(', it's likely an IIFE that returns a promise
-    const isExpression = trimmedCode.startsWith('(') && trimmedCode.endsWith(')');
-    
-    const wrapped = `const path = require('path');
-const fs = require('fs');
-process.chdir(${safeSandboxPath});
-(async () => {
   try {
-    ${isExpression ? `const result = ${trimmedCode};` : trimmedCode}
-    ${isExpression ? `const finalResult = await Promise.resolve(result);` : ''}
-    ${isExpression ? `
-    console.log(JSON.stringify({
+    const params = JSON.parse(input);
+    const { sandboxPath, modulePath, functionName, args, streamLogs } = params;
+
+    // Change to sandbox directory
+    process.chdir(sandboxPath);
+
+    // Intercept console.log if streaming is enabled
+    if (streamLogs) {
+      const originalLog = console.log;
+      const originalError = console.error;
+      const originalWarn = console.warn;
+      const originalInfo = console.info;
+      
+      console.log = (...logArgs) => {
+        process.stderr.write('__REMOTE_LOG__:' + JSON.stringify({ type: 'log', args: logArgs }) + '\\n');
+      };
+      console.error = (...logArgs) => {
+        process.stderr.write('__REMOTE_LOG__:' + JSON.stringify({ type: 'error', args: logArgs }) + '\\n');
+      };
+      console.warn = (...logArgs) => {
+        process.stderr.write('__REMOTE_LOG__:' + JSON.stringify({ type: 'warn', args: logArgs }) + '\\n');
+      };
+      console.info = (...logArgs) => {
+        process.stderr.write('__REMOTE_LOG__:' + JSON.stringify({ type: 'info', args: logArgs }) + '\\n');
+      };
+    }
+
+    // Resolve and load the module
+    const fullModulePath = path.resolve(sandboxPath, modulePath);
+    const mod = require(fullModulePath);
+    const func = mod[functionName] || mod.default?.[functionName];
+
+    if (!func || typeof func !== 'function') {
+      throw new Error('Function ' + functionName + ' not found in module ' + fullModulePath);
+    }
+
+    // Execute the function with provided arguments
+    const result = await Promise.resolve(func.apply(null, args));
+
+    // Use stdout for final result only
+    process.stdout.write(JSON.stringify({
       success: true,
-      result: finalResult
-    }));` : ''}
+      result: result
+    }));
   } catch (error) {
-    console.log(JSON.stringify({
+    process.stdout.write(JSON.stringify({
       success: false,
       error: {
         message: error.message,
@@ -230,29 +75,372 @@ process.chdir(${safeSandboxPath});
     }));
     process.exit(1);
   }
-})();
+}
+
+main();
 `;
-    return wrapped;
+
+/**
+ * Static runner script for executing arbitrary code safely.
+ * The code is passed via stdin, not interpolated into the script.
+ */
+const CODE_RUNNER_SCRIPT = `
+const path = require('path');
+const fs = require('fs');
+const vm = require('vm');
+
+async function main() {
+  // Read JSON params from stdin
+  const input = await new Promise((resolve) => {
+    let data = '';
+    process.stdin.setEncoding('utf8');
+    process.stdin.on('data', chunk => data += chunk);
+    process.stdin.on('end', () => resolve(data));
+  });
+
+  try {
+    const params = JSON.parse(input);
+    const { sandboxPath, code, streamLogs } = params;
+
+    // Change to sandbox directory
+    process.chdir(sandboxPath);
+
+    // Create intercepted console for logging
+    const interceptedConsole = streamLogs ? {
+      log: (...args) => {
+        process.stderr.write('__REMOTE_LOG__:' + JSON.stringify({ type: 'log', args }) + '\\n');
+      },
+      error: (...args) => {
+        process.stderr.write('__REMOTE_LOG__:' + JSON.stringify({ type: 'error', args }) + '\\n');
+      },
+      warn: (...args) => {
+        process.stderr.write('__REMOTE_LOG__:' + JSON.stringify({ type: 'warn', args }) + '\\n');
+      },
+      info: (...args) => {
+        process.stderr.write('__REMOTE_LOG__:' + JSON.stringify({ type: 'info', args }) + '\\n');
+      }
+    } : console;
+
+    // Create a context with common globals
+    const context = {
+      require,
+      process,
+      console: interceptedConsole,
+      Buffer,
+      setTimeout,
+      setInterval,
+      clearTimeout,
+      clearInterval,
+      setImmediate,
+      clearImmediate,
+      __dirname: sandboxPath,
+      __filename: path.join(sandboxPath, '_remote_exec.js'),
+      module: { exports: {} },
+      exports: {},
+      path,
+      fs
+    };
+
+    // Execute code in VM context
+    vm.createContext(context);
+    
+    // Wrap code to capture result
+    const wrappedCode = '(async () => { ' + code + ' })()';
+    const result = await vm.runInContext(wrappedCode, context, {
+      filename: '_remote_exec.js',
+      timeout: 30000
+    });
+
+    process.stdout.write(JSON.stringify({
+      success: true,
+      result: result
+    }));
+  } catch (error) {
+    process.stdout.write(JSON.stringify({
+      success: false,
+      error: {
+        message: error.message,
+        stack: error.stack,
+        name: error.name
+      }
+    }));
+    process.exit(1);
+  }
+}
+
+main();
+`;
+
+/**
+ * Handles remote code execution in the sandbox
+ */
+export class RemoteExecutor {
+  private runnerScriptPath: string | null = null;
+  private codeRunnerScriptPath: string | null = null;
+  private streamRemoteLogs: boolean;
+
+  constructor(
+    private connection: SshConnection,
+    private sandboxPath: string,
+    streamRemoteLogs: boolean = false
+  ) {
+    this.streamRemoteLogs = streamRemoteLogs;
   }
 
   /**
-   * Clean up temporary script file
+   * Ensure the code runner script is uploaded to the remote machine
    */
-  private async cleanupTempFile(filePath: string): Promise<void> {
-    try {
-      const client = this.connection.getClient();
-      await new Promise<void>((resolve, reject) => {
-        client.exec(`rm -f ${filePath}`, (err) => {
-          if (err) {
-            reject(err);
-          } else {
-            resolve();
+  private async ensureCodeRunnerScript(): Promise<string> {
+    if (this.codeRunnerScriptPath) {
+      return this.codeRunnerScriptPath;
+    }
+
+    const scriptPath = `/tmp/ssh-remote-code-runner-${crypto.randomBytes(8).toString('hex')}.js`;
+    const sftp = await this.connection.getSftp();
+
+    await new Promise<void>((resolve, reject) => {
+      const writeStream = sftp.createWriteStream(scriptPath);
+      writeStream.on('close', () => resolve());
+      writeStream.on('error', (err: Error) => reject(err));
+      writeStream.end(CODE_RUNNER_SCRIPT, 'utf8');
+    });
+
+    this.codeRunnerScriptPath = scriptPath;
+    return scriptPath;
+  }
+
+  /**
+   * Ensure the function runner script is uploaded to the remote machine
+   */
+  private async ensureFunctionRunnerScript(): Promise<string> {
+    if (this.runnerScriptPath) {
+      return this.runnerScriptPath;
+    }
+
+    const scriptPath = `/tmp/ssh-remote-func-runner-${crypto.randomBytes(8).toString('hex')}.js`;
+    const sftp = await this.connection.getSftp();
+
+    await new Promise<void>((resolve, reject) => {
+      const writeStream = sftp.createWriteStream(scriptPath);
+      writeStream.on('close', () => resolve());
+      writeStream.on('error', (err: Error) => reject(err));
+      writeStream.end(FUNCTION_RUNNER_SCRIPT, 'utf8');
+    });
+
+    this.runnerScriptPath = scriptPath;
+    return scriptPath;
+  }
+
+  /**
+   * Execute arbitrary code in the remote sandbox
+   * Code is passed as data via stdin, not interpolated into a script
+   */
+  async execute<T = any>(code: string): Promise<T> {
+    const runnerPath = await this.ensureCodeRunnerScript();
+
+    // Prepare params as JSON - code is DATA, not part of the script
+    const params = JSON.stringify({
+      sandboxPath: this.sandboxPath,
+      code: code,
+      streamLogs: this.streamRemoteLogs
+    });
+
+    const client = this.connection.getClient();
+    return new Promise((resolve, reject) => {
+      // Execute runner and pipe params via stdin
+      client.exec(`node ${runnerPath}`, (err, stream) => {
+        if (err) {
+          reject(err);
+          return;
+        }
+
+        let stdout = '';
+        let stderr = '';
+
+        stream.on('data', (data: Buffer) => {
+          stdout += data.toString();
+        });
+
+        stream.stderr.on('data', (data: Buffer) => {
+          const chunk = data.toString();
+          stderr += chunk;
+          
+          // Process log lines if streaming is enabled
+          if (this.streamRemoteLogs) {
+            this.processRemoteLogs(chunk);
           }
         });
+
+        stream.on('close', async () => {
+          try {
+            // Filter out log lines from stderr before parsing
+            const cleanStderr = this.filterLogLines(stderr);
+            const result = this.parseResult(stdout, cleanStderr);
+            if (result.success) {
+              resolve(result.result as T);
+            } else {
+              const error = new Error(result.error?.message || 'Execution failed');
+              if (result.error?.stack) {
+                (error as any).stack = result.error.stack;
+              }
+              reject(error);
+            }
+          } catch (parseError) {
+            reject(
+              new Error(
+                `Failed to parse execution result. stdout: ${stdout}, stderr: ${stderr}, parseError: ${parseError}`
+              )
+            );
+          }
+        });
+
+        // Write params to stdin and close it
+        stream.write(params);
+        stream.end();
       });
-    } catch (error) {
-      // Ignore cleanup errors
+    });
+  }
+
+  /**
+   * Execute a function call remotely.
+   * Uses a static runner script - function details are passed as JSON data, not code.
+   */
+  async executeFunction<T = any>(
+    modulePath: string,
+    functionName: string,
+    args: any[]
+  ): Promise<T> {
+    const runnerPath = await this.ensureFunctionRunnerScript();
+
+    // All parameters are passed as JSON data - no code interpolation
+    const params = JSON.stringify({
+      sandboxPath: this.sandboxPath,
+      modulePath: modulePath,
+      functionName: functionName,
+      args: args,
+      streamLogs: this.streamRemoteLogs
+    });
+
+    const client = this.connection.getClient();
+    return new Promise((resolve, reject) => {
+      // Execute runner and pipe params via stdin
+      client.exec(`node ${runnerPath}`, (err, stream) => {
+        if (err) {
+          reject(err);
+          return;
+        }
+
+        let stdout = '';
+        let stderr = '';
+
+        stream.on('data', (data: Buffer) => {
+          stdout += data.toString();
+        });
+
+        stream.stderr.on('data', (data: Buffer) => {
+          const chunk = data.toString();
+          stderr += chunk;
+          
+          // Process log lines if streaming is enabled
+          if (this.streamRemoteLogs) {
+            this.processRemoteLogs(chunk);
+          }
+        });
+
+        stream.on('close', async () => {
+          try {
+            // Filter out log lines from stderr before parsing
+            const cleanStderr = this.filterLogLines(stderr);
+            const result = this.parseResult(stdout, cleanStderr);
+            if (result.success) {
+              resolve(result.result as T);
+            } else {
+              const error = new Error(result.error?.message || 'Function execution failed');
+              if (result.error?.stack) {
+                (error as any).stack = result.error.stack;
+              }
+              reject(error);
+            }
+          } catch (parseError) {
+            reject(
+              new Error(
+                `Failed to parse function result. stdout: ${stdout}, stderr: ${stderr}, parseError: ${parseError}`
+              )
+            );
+          }
+        });
+
+        // Write params to stdin and close it
+        stream.write(params);
+        stream.end();
+      });
+    });
+  }
+
+  /**
+   * Process remote log output and print to local console
+   */
+  private processRemoteLogs(chunk: string): void {
+    const lines = chunk.split('\n');
+    for (const line of lines) {
+      if (line.startsWith('__REMOTE_LOG__:')) {
+        try {
+          const logData = JSON.parse(line.substring('__REMOTE_LOG__:'.length));
+          const prefix = '[Remote]';
+          
+          switch (logData.type) {
+            case 'log':
+              console.log(prefix, ...logData.args);
+              break;
+            case 'error':
+              console.error(prefix, ...logData.args);
+              break;
+            case 'warn':
+              console.warn(prefix, ...logData.args);
+              break;
+            case 'info':
+              console.info(prefix, ...logData.args);
+              break;
+          }
+        } catch (e) {
+          // Ignore malformed log lines
+        }
+      }
     }
+  }
+
+  /**
+   * Filter out log lines from stderr
+   */
+  private filterLogLines(stderr: string): string {
+    return stderr
+      .split('\n')
+      .filter(line => !line.startsWith('__REMOTE_LOG__:'))
+      .join('\n');
+  }
+
+  /**
+   * Clean up runner scripts from remote machine
+   */
+  async cleanup(): Promise<void> {
+    const client = this.connection.getClient();
+    const filesToClean = [this.runnerScriptPath, this.codeRunnerScriptPath].filter(Boolean);
+
+    for (const filePath of filesToClean) {
+      try {
+        await new Promise<void>((resolve, reject) => {
+          client.exec(`rm -f ${filePath}`, (err) => {
+            if (err) reject(err);
+            else resolve();
+          });
+        });
+      } catch {
+        // Ignore cleanup errors
+      }
+    }
+
+    this.runnerScriptPath = null;
+    this.codeRunnerScriptPath = null;
   }
 
   /**

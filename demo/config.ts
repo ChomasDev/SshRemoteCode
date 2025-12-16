@@ -15,6 +15,7 @@ export const ubuntuConfig: SshRemoteCodeConfig = {
   readyTimeout: 20000, // Ready timeout in ms
   preBuildCommand: true,
   preBuildCustomCommand: 'npm install && npm run build',
+  streamRemoteLogs: true,
 };
 
 // Home Assistant Configuration

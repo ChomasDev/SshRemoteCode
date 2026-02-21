@@ -273,3 +273,15 @@ MCP was a first attempt.
 This is the second.
 
 And this time, the execution model matches how both LLMs and computers actually work.
+## Production hardening checklist (recommended)
+
+If you use this library as an AI execution substrate, add a control plane around it:
+
+- Host allowlist (explicit registry of reachable hosts)
+- Command policy (allow/deny regex + approval-required rules)
+- Audit trail (who/what/when + stdout/stderr)
+- Per-host SSH keys (least privilege)
+- Timeouts + retries + idempotency keys
+- Secret isolation (no keys in prompts/repo)
+
+This library focuses on **execution transport**. For production agent systems, combine it with a policy layer.

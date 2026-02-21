@@ -1,22 +1,41 @@
 /**
- * Type utilities for remote function calls
+ * Functional result type (never-throw style)
  */
+export type Result<T, E = RemoteError> =
+  | { ok: true; data: T }
+  | { ok: false; error: E };
+
+export interface RemoteError {
+  code:
+    | 'VALIDATION_ERROR'
+    | 'NOT_CONNECTED'
+    | 'CONNECTION_ERROR'
+    | 'COMMAND_ERROR'
+    | 'UPLOAD_ERROR'
+    | 'DOWNLOAD_ERROR'
+    | 'EXECUTION_ERROR'
+    | 'PARSE_ERROR'
+    | 'UNKNOWN_ERROR';
+  message: string;
+  details?: unknown;
+}
+
+export const ok = <T>(data: T): Result<T> => ({ ok: true, data });
+export const err = <E = RemoteError>(error: E): Result<never, E> => ({ ok: false, error });
 
 /**
- * Converts a function type to its remote callable version
- * All parameters and return values are serialized/deserialized
+ * Converts a function type to its remote callable version (never-throw)
  */
 export type RemoteFunction<T extends (...args: any[]) => any> = T extends (
   ...args: infer Args
 ) => infer Return
   ? Return extends Promise<infer U>
-    ? (...args: Args) => Promise<U>
-    : (...args: Args) => Promise<Return>
+    ? (...args: Args) => Promise<Result<U>>
+    : (...args: Args) => Promise<Result<Return>>
   : never;
 
 /**
  * Converts an object type to its remote proxy version
- * All methods become async and return promises
  */
 export type RemoteModule<T> = {
   [K in keyof T]: T[K] extends (...args: any[]) => any
@@ -27,7 +46,7 @@ export type RemoteModule<T> = {
 };
 
 /**
- * Result of remote code execution
+ * Internal execution envelope (from remote runner)
  */
 export interface ExecutionResult<T = any> {
   success: boolean;
@@ -38,13 +57,3 @@ export interface ExecutionResult<T = any> {
     name?: string;
   };
 }
-
-/**
- * Remote function call payload
- */
-export interface RemoteCallPayload {
-  modulePath: string;
-  functionName: string;
-  args: any[];
-}
-

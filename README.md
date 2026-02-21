@@ -253,6 +253,30 @@ MCP makes the LLM act like the runtime. Every intermediate result is shoved thro
 
 This library’s stance is the opposite: let the model write code, let machines execute it, and let state live where state belongs.
 
+## Clean Code Architecture + Never-Throw style
+
+This project now follows a stricter contract-first style:
+
+- **Functional `Result<T, E>` API** for public operations (`ok`/`error`, no thrown control-flow)
+- **Single entry façade** (`SshRemoteCode`) as application layer
+- **Infrastructure separation** (`SshConnection`, `RemoteExecutor`, `RemoteProxy`)
+- **Typed error codes** (`NOT_CONNECTED`, `CONNECTION_ERROR`, `EXECUTION_ERROR`, ...)
+
+Example (never-throw):
+
+```ts
+const sdk = SshRemoteCode.create(config);
+if (!sdk.ok) return console.error(sdk.error);
+
+const connected = await sdk.data.connect();
+if (!connected.ok) return console.error(connected.error);
+
+const mod = await sdk.data.import<{ add: (a:number,b:number)=>Promise<number> }>('./index');
+if (!mod.ok) return console.error(mod.error);
+
+const sum = await mod.data.add(2, 3); // Promise<Result<number>>
+```
+
 ## The open-source multiplier (what the community can add)
 
 If the open-source community builds on this execution substrate, you can treat “other services” as just “other sandboxes”:
